@@ -1,0 +1,10 @@
+tracks/
+tasks/
+results/
+env/ts/node_modules/
+env/java/
+env/rust/
+env/cpp/
+__pycache__/
+.venv/
+env/

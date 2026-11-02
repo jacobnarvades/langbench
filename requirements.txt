@@ -1,0 +1,6 @@
+anthropic>=0.40
+pytest>=8
+pyright>=1.1.380
+pandas>=2
+numpy>=1.26
+statsmodels>=0.14
