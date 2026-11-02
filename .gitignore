@@ -1,10 +1,12 @@
 tracks/
 tasks/
+tasks_lcb*/
+tasks_selftest/
 results/
+data/
 env/ts/node_modules/
 env/java/
 env/rust/
 env/cpp/
 __pycache__/
 .venv/
-env/

@@ -12,6 +12,7 @@ fails and whether diagnostics() output is included; see run.py.
 """
 import glob
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -216,9 +217,24 @@ class Cpp:
 RUNNERS = {r.name: r for r in [Python(), Rust(), Go(), Java(), TypeScript(), Cpp()]}
 
 
+def load_task(tdir):
+    """Read task.json. stdin/stdout tasks keep one shared tests.json next to the per-language directories."""
+    task = json.loads((Path(tdir) / "task.json").read_text())
+    if task.get("kind") == "stdio":
+        task["tests_path"] = str(Path(tdir).parent / "tests.json")
+    return task
+
+
+def runner_for(lang, task):
+    if task.get("kind") == "stdio":
+        from stdio import STDIO_RUNNERS
+        return STDIO_RUNNERS[lang]
+    return RUNNERS[lang]
+
+
 def evaluate(lang, ws, task, worker=0):
     """Build then test. Returns dict(outcome, build_output, test_output)."""
-    r = RUNNERS[lang]
+    r = runner_for(lang, task)
     touch_all(ws)
     ok, bout = r.build(ws, task, worker)
     if not ok:

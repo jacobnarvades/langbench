@@ -53,6 +53,41 @@ python3 run.py --model mock:ref --slugs anagram --samples 1            # everyth
 python3 run.py --model mock:stub-then-ref --slugs anagram --samples 1  # broken first, passes on turn 2
 ```
 
+## Harder tasks: competitive programming (stdin/stdout)
+
+The Exercism set saturates on strong models (Haiku passes ~97-99% single-shot in every language), which leaves no
+room to see language effects. The harness also runs **stdin/stdout problems** from
+[LiveCodeBench](https://livecodebench.github.io) (AtCoder). One problem, one statement, and one hidden test set are shared
+by all six languages, so nothing is translated per language.
+
+```bash
+python3 prepare_lcb.py --selftest --out tasks_selftest        # 2 tiny problems WITH reference solutions in all 6 languages
+python3 validate.py --tasks-dir tasks_selftest                # verifies the six stdin/stdout runners
+python3 prepare_lcb.py --after 2025-01-01 --difficulty medium hard --contest-prefix arc agc --out tasks_lcb_arc
+python3 validate.py --tasks-dir tasks_lcb_arc
+python3 run.py --model claude-haiku-5-5 --tasks-dir tasks_lcb_arc --samples 3 --workers 8
+python3 analyze.py results/claude-haiku-5-5-lcb_arc
+```
+
+Design notes:
+- Tests: every public example plus 25 hidden tests per problem (the 5 largest inputs, so slow languages hit the time
+  limit, plus 20 random). Output is compared token by token; numbers containing `.`/`e` match within 1e-6.
+- Time limit: 10 s per test for every language (`LANGBENCH_TIME_LIMIT`). No memory limit. Speed differences between
+  languages therefore count as part of "language effect" on problems with large inputs.
+- Feedback (both conditions): the verdict of the first failing test. Public examples also show input / expected / got;
+  hidden tests show only the verdict (wrong answer, runtime error + stderr, time limit).
+- Build: python `py_compile`, TypeScript transpile (syntax only), `rustc -O`, `go build`, `javac`, `g++ -O2 -std=c++17`.
+  Diagnostics: warnings + pyright / `tsc --strict` / `go vet`. C++ gets a `bits/stdc++.h` shim (`support/cpp`) because
+  macOS g++ has none.
+- Replies may be long on hard problems: `--max-tokens` defaults to 32000, and a truncated reply counts as a failure.
+- LiveCodeBench ships no reference solutions, so `validate.py` only checks that the stub fails. The runners are verified
+  by the selftest set instead. Problems no language ever solves carry no information for the comparison.
+
+**Contamination caveat.** The newest public LiveCodeBench release (`test6`) covers contests up to April 2025. A model
+whose training data extends past that has probably seen these problems. The `--after` filter does not fix this unless
+newer problems are added to the loader. Treat results as "hard problems, possibly seen", and prefer comparisons between
+languages over absolute pass rates.
+
 ## Size and cost
 
 ~60 exercises x 6 languages x 2 conditions x 3 samples = ~2,200 episodes per model, ~1.5 model calls
@@ -78,5 +113,6 @@ Power: with ~60 exercises, a single language's `diag - tests` effect has a 95% C
 - `prepare_tasks.py`: builds `tasks/<exercise>/<lang>/` from the pinned tracks (un-skips all tests)
 - `runners.py`: build / diagnostics / test per language
 - `validate.py`: writes `tasks/valid.json`, the matched exercise set
+- `stdio.py`, `prepare_lcb.py`, `selftest_problems.py`, `support/`: stdin/stdout tasks (LiveCodeBench)
 - `run.py`: agent loop, both conditions
 - `analyze.py`: Python-normalized indices with bootstrap CIs, diagnostics effect, mixed model -> `report.md`

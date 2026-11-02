@@ -29,7 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from runners import RUNNERS, Outcome, evaluate
+from runners import Outcome, evaluate, load_task, runner_for
 
 ROOT = Path(__file__).resolve().parent
 TASKS = ROOT / "tasks"
@@ -50,6 +50,15 @@ SYSTEM = (
 
 def first_prompt(task, ws):
     lang = LANG_LABEL[task["lang"]]
+    if task.get("kind") == "stdio":
+        f = task["solution_files"][0]
+        body = (ws / f).read_text()
+        extra = " The public class must be named Main." if task["lang"] == "java" else ""
+        return (f"Language: {lang}\n\n# Problem\n\n{task['instructions']}\n\n"
+                f"# Solution file (edit this; it is compiled and run as a single program{extra})\n"
+                f'<file path="{f}">\n{body}\n</file>\n\n'
+                "Your program is judged on hidden tests as well as the examples above, with a time limit per test. "
+                "Write a complete, efficient solution.")
     parts = [f"Language: {lang}\n\n# Instructions\n\n{task['instructions']}\n\n# Solution files (edit these)\n"]
     for f in task["solution_files"]:
         p = ws / f
@@ -78,6 +87,8 @@ def allowed_path(task, path):
     """Solution files, or new files in a solution file's directory. Never tests or build config."""
     if ".." in Path(path).parts or path in task["test_files"]:
         return False
+    if task.get("kind") == "stdio":
+        return path in task["solution_files"]
     if path in task["solution_files"]:
         return True
     sol_dirs = {str(Path(s).parent) for s in task["solution_files"]}
@@ -117,8 +128,10 @@ class Claude:
         self.model, self.max_tokens = model, max_tokens
 
     def __call__(self, messages, ctx):
-        r = self.client.messages.create(model=self.model, max_tokens=self.max_tokens,
-                                        system=SYSTEM, messages=messages)
+        # streaming: the SDK refuses non-streaming requests with a large max_tokens
+        with self.client.messages.stream(model=self.model, max_tokens=self.max_tokens,
+                                         system=SYSTEM, messages=messages) as stream:
+            r = stream.get_final_message()
         text = "".join(b.text for b in r.content if b.type == "text")
         return text, {"in": r.usage.input_tokens, "out": r.usage.output_tokens, "stop": r.stop_reason}
 
@@ -151,8 +164,8 @@ def make_model(name, max_tokens):
 
 def episode(model, slug, lang, condition, sample, max_turns, worker, tdir_out):
     tdir = TASKS / slug / lang
-    task = json.loads((tdir / "task.json").read_text())
-    runner = RUNNERS[lang]
+    task = load_task(tdir)
+    runner = runner_for(lang, task)
     turns, messages = [], []
     with tempfile.TemporaryDirectory(prefix=f"lb-{slug}-{lang}-") as tmp:
         ws = Path(tmp) / "ws"
@@ -202,17 +215,21 @@ def episode(model, slug, lang, condition, sample, max_turns, worker, tdir_out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="Anthropic model id, or mock:ref / mock:stub-then-ref / mock:stub")
+    ap.add_argument("--tasks-dir", default="tasks", help="tasks (Exercism), tasks_lcb (LiveCodeBench), tasks_selftest")
     ap.add_argument("--run-name", help="defaults to the model name")
     ap.add_argument("--langs", nargs="*")
     ap.add_argument("--slugs", nargs="*")
     ap.add_argument("--conditions", nargs="*", default=CONDITIONS)
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--max-turns", type=int, default=4)
-    ap.add_argument("--max-tokens", type=int, default=16000)
+    ap.add_argument("--max-tokens", type=int, default=32000,
+                    help="output cap per reply; hard problems need room to reason (a truncated reply counts as a failure)")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--allow-unvalidated", action="store_true", help="skip the valid.json filter (testing only)")
     args = ap.parse_args()
 
+    global TASKS
+    TASKS = ROOT / args.tasks_dir
     man = json.loads((TASKS / "manifest.json").read_text())
     langs = args.langs or man["langs"]
     if args.slugs:
@@ -222,11 +239,13 @@ def main():
     elif args.allow_unvalidated:
         slugs = man["slugs"]
     else:
-        raise SystemExit("tasks/valid.json not found: run validate.py first")
+        raise SystemExit(f"{TASKS}/valid.json not found: run validate.py first")
     if not args.model.startswith("mock:") and not os.environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit("set ANTHROPIC_API_KEY")
 
     name = args.run_name or args.model.replace(":", "-")
+    if args.tasks_dir != "tasks" and not args.run_name:
+        name += "-" + args.tasks_dir.removeprefix("tasks_")
     out_dir = ROOT / "results" / name
     tdir_out = out_dir / "transcripts"
     tdir_out.mkdir(parents=True, exist_ok=True)

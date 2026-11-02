@@ -15,16 +15,18 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from runners import Outcome, evaluate
+from runners import Outcome, evaluate, load_task
 
 TASKS = Path(__file__).resolve().parent / "tasks"
 
 
 def check(slug, lang, worker):
     tdir = TASKS / slug / lang
-    task = json.loads((tdir / "task.json").read_text())
+    task = load_task(tdir)
     res = {}
-    for variant in ["reference", "stub"]:
+    # LiveCodeBench problems ship no reference solutions: only the stub check applies, and the runners
+    # themselves are verified with the selftest set (which has references in every language).
+    for variant in (["reference"] if task["reference_files"] else []) + ["stub"]:
         with tempfile.TemporaryDirectory(prefix=f"lb-{slug}-{lang}-") as tmp:
             ws = Path(tmp) / "ws"
             shutil.copytree(tdir / "workspace", ws)
@@ -37,7 +39,8 @@ def check(slug, lang, worker):
             res[variant] = r["outcome"]
             if variant == "reference" and r["outcome"] != Outcome.PASS:
                 res["reference_log"] = (r["build_output"] + r["test_output"])[-1500:]
-    res["valid"] = res["reference"] == Outcome.PASS and res["stub"] != Outcome.PASS
+    res["reference"] = res.get("reference", "none")
+    res["valid"] = res["reference"] in (Outcome.PASS, "none") and res["stub"] != Outcome.PASS
     return slug, lang, res
 
 
@@ -45,8 +48,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--langs", nargs="*")
     ap.add_argument("--slugs", nargs="*")
+    ap.add_argument("--tasks-dir", default="tasks")
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
+    global TASKS
+    TASKS = Path(__file__).resolve().parent / args.tasks_dir
     man = json.loads((TASKS / "manifest.json").read_text())
     langs = args.langs or man["langs"]
     slugs = args.slugs or man["slugs"]
